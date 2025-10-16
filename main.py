@@ -1,4 +1,5 @@
 # main.py
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, Any
 
@@ -6,13 +7,15 @@ from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings
+from starlette.responses import FileResponse
 
+from config.config import settings
 from parser.dy_parse import DyParser
 from parser.parser_factory import ParserFactory
+from parser.w51_parse import W51Parser
 from parser.wb_parse import WbParser
 from parser.xhs_parse import XhsParser
-from util import ip_util
+from util import ip_util, cache_util
 
 logger.add(
     "logs/log_{time}.log",  # 文件名可以带时间占位
@@ -23,28 +26,11 @@ logger.add(
     format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
 )
 
-
-# =========================
-# 配置
-# =========================
-class Settings(BaseSettings):
-    APP_NAME: str = "ClipboardDownloadService"
-    HOST: str = "0.0.0.0"
-    PORT: int = 4999
-    DOWNLOAD_DIR: str = "./downloads"
-    ALLOWED_ORIGINS: list = ["*"]  # 可根据需要修改
-    MAX_FILE_SIZE_MB: int = 200
-
-    class Config:
-        env_file = ".env"
-
-
-settings = Settings()
-
 # 注册解析器
 ParserFactory.register(XhsParser())
 ParserFactory.register(DyParser())
 ParserFactory.register(WbParser())
+ParserFactory.register(W51Parser())
 
 
 class ResponseModel(BaseModel):
@@ -69,8 +55,8 @@ async def lifespan(app: FastAPI):
     # 启动事件
     local_ip = ip_util.get_local_ip()
     public_ip = ip_util.get_public_ip()
-    logger.info(f"本机局域网 IP: {local_ip}:{settings.PORT}")
-    logger.info(f"公网 IP: {public_ip}:{settings.PORT}")
+    logger.info(f"本机局域网 IP: {settings.network_url}")
+    logger.info(f"公网 IP: {public_ip}:{settings.server_port}")
     yield
     # 关闭事件（可选）
     logger.info("服务即将关闭...")
@@ -79,7 +65,7 @@ async def lifespan(app: FastAPI):
 # =========================
 # FastAPI 实例
 # =========================
-app = FastAPI(title = settings.APP_NAME, lifespan = lifespan)
+app = FastAPI(lifespan = lifespan)
 api_router = APIRouter(prefix = "/api/v1")
 
 # =========================
@@ -87,7 +73,7 @@ api_router = APIRouter(prefix = "/api/v1")
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = settings.ALLOWED_ORIGINS,
+    allow_origins = ["*"],
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -144,6 +130,14 @@ async def download_endpoint(req: DownloadRequest):
     return ResponseModel(platform = platform.value, data = urls)
 
 
+@api_router.get("/video/{token}")
+def get_video(token: str):
+    path = cache_util.get_path(token)
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "Video expired or missing")
+    return FileResponse(path, media_type = "video/mp4")
+
+
 app.include_router(api_router)
 
 
@@ -152,7 +146,7 @@ app.include_router(api_router)
 # =========================
 @api_router.get("/health")
 async def health():
-    return {"status": "ok", "app": settings.APP_NAME}
+    return {"status": "ok"}
 
 
 # =========================
@@ -171,8 +165,9 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "main:app",
-        host = settings.HOST,
-        port = settings.PORT,
+        host = "0.0.0.0",
+        port = settings.server_port,
+        workers = 20,
         reload = True  # 开发模式自动重载
     )
 
