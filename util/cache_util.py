@@ -6,7 +6,8 @@ import redis
 from config.config import settings
 
 r = redis.Redis(host = settings.redis_host, port = settings.redis_port, db = settings.redis_db,
-                decode_responses = True)
+                password = settings.redis_pwd or None, decode_responses = True,
+                socket_connect_timeout = 5, socket_timeout = 5)
 
 
 def create_token(file_path, expire_seconds = 3600):

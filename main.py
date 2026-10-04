@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, JSONResponse
 
 from config.config import settings
 from parser.dy_parse import DyParser
@@ -138,15 +138,19 @@ def get_video(token: str):
     return FileResponse(path, media_type = "video/mp4")
 
 
-app.include_router(api_router)
-
-
 # =========================
 # 健康检查
 # =========================
 @api_router.get("/health")
-async def health():
-    return {"status": "ok"}
+def health():
+    try:
+        cache_util.r.ping()
+    except Exception:
+        raise HTTPException(503, "Redis unavailable")
+    return {"status": "ok", "redis": "ok"}
+
+
+app.include_router(api_router)
 
 
 # =========================
@@ -154,7 +158,11 @@ async def health():
 # =========================
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    return ResponseModel.error(exc.detail, exc.status_code)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ResponseModel.error(exc.detail, exc.status_code).model_dump(),
+        headers=exc.headers,
+    )
 
 
 # =========================

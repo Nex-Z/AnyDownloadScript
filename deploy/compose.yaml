@@ -1,0 +1,29 @@
+name: anydownloadscript
+services:
+  app:
+    image: anydownloadscript:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      SERVER_PORT: "4999"
+      DOWNLOAD_PATH: /data
+      TZ: Asia/Hong_Kong
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4999:4999"
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4999/api/v1/health', timeout=8)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
