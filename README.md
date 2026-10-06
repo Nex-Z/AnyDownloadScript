@@ -62,6 +62,37 @@ https://www.icloud.com/shortcuts/971541b983a345399e19af1445aac406
 
 声明：脚本仅供学习交流使用，请勿用于商业用途。
 
+### Douyin public media extraction
+
+Douyin share links and `/note/<id>` / `/video/<id>` links use public structured
+post metadata. Image galleries preserve their order, signed CDN URLs and formats
+(including WebP and CDN transformations). Every image must have an accessible,
+valid image response; an incomplete gallery is an error.
+
+Videos use the highest-resolution available playback rendition, with bitrate as
+a tie breaker, and return a URL list compatible with the existing API/Shortcut.
+Watermarked `download_addr` and `playwm` addresses are excluded. Playback URLs are
+not rewritten and file headers are checked before returning them. This does not
+establish that a rendition is the creator's original upload or guarantee that no
+watermark was embedded by the creator.
+
+No login cookies, signature generation or access-restriction bypass is used.
+If Douyin withholds public metadata, the API returns an explicit 422 error rather
+than an empty success; upstream/network/media failures return 502. Public access
+varies by post and environment. The supplied regression link
+`https://v.douyin.com/P8m2VakJop8/` resolved to `7693103726027205561`, but public
+share responses on 2026-10-07 were intermittent. A successful cookie-free request
+returned five WebP images; full downloads and FFprobe confirmed all five were
+1344 x 2400. Later requests returned a verification page, correctly reported as an
+error. Public video test posts did not provide accessible playback metadata, so
+actual video quality and watermark absence have not yet been established.
+
+Run dedicated offline and HTTP-probe regressions from the project root:
+
+```powershell
+Get-Content -Raw scripts/check_douyin.py | uv run python -
+```
+
 ## NAS 部署（运行产物）
 
 部署地址：`http://192.168.6.178:4999`，接口文档：`/docs`，健康检查：`/api/v1/health`。
