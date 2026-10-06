@@ -192,20 +192,31 @@ class DyParser(BaseParser):
             async with aiohttp.ClientSession(headers=self.headers,
                 timeout=aiohttp.ClientTimeout(total=20), connector=aiohttp.TCPConnector(limit=4)) as session:
                 content, resolved = await self.fetch_page(session, url)
+                has_anonymous_cookie = lambda: any(c.key == "ttwid" for c in session.cookie_jar)
+                cookie_issued = has_anonymous_cookie()
                 identity = self.post_id(resolved) or self.post_id(url)
                 if identity is None:
                     raise HTTPException(422, "Cannot identify Douyin post; use a post share link")
                 canonical = f"https://www.iesdouyin.com/share/video/{identity}/"
-                for attempt in range(2):
+                for attempt in range(3):
                     for state in self.states(content):
                         post = self.find_post(state, identity)
                         if post is not None:
                             kind, groups = self.candidates(post)
                             return await self.validate_media(session, kind, groups)
+                    # Do not replay verification challenges. A normal public response may
+                    # issue its anonymous session cookie only after serving an empty shell.
+                    if "waf-jschallenge" in content or "window.byted_acrawler.init" in content:
+                        break
                     if attempt == 0 and resolved.rstrip("/") != canonical.rstrip("/"):
-                        content, _ = await self.fetch_page(session, canonical)
+                        next_url = canonical
+                    elif cookie_issued and attempt < 2:
+                        next_url = resolved
                     else:
                         break
+                    had_cookie = has_anonymous_cookie()
+                    content, resolved = await self.fetch_page(session, next_url)
+                    cookie_issued = not had_cookie and has_anonymous_cookie()
                 raise HTTPException(422, "Douyin public page did not provide media. Login or verification may be required, or the post may be unavailable; access restrictions were not bypassed.")
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise HTTPException(502, "Douyin connection failed or timed out; please retry later") from exc

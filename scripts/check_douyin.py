@@ -103,6 +103,43 @@ class DouyinChecks(unittest.TestCase):
                 asyncio.run(p.parse('https://v.douyin.com/test/'))
         self.assertEqual(error.exception.status_code,422)
 
+    def test_public_cookie_issued_on_canonical_page_is_replayed_once(self):
+        async def run():
+            p=DyParser();calls=[]
+            async def fetch(session,url):
+                calls.append(url)
+                if len(calls)==2:
+                    session.cookie_jar.update_cookies({'ttwid':'anonymous-test-session'})
+                if len(calls)==3:
+                    return page({'aweme_id':ID,'images':[{'url_list':['https://cdn.test/a.webp']}]}),url
+                return '<script>window._ROUTER_DATA={"loaderData":{}};</script>',('https://www.iesdouyin.com/share/note/'+ID+'/' if len(calls)==1 else url)
+            with patch.object(p,'fetch_page',side_effect=fetch),patch.object(p,'validate_media',AsyncMock(return_value=['https://cdn.test/a.webp'])):
+                self.assertEqual(await p.parse('https://v.douyin.com/test/'),['https://cdn.test/a.webp'])
+            self.assertEqual(len(calls),3)
+            self.assertEqual(calls[1],calls[2])
+        asyncio.run(run())
+
+    def test_anonymous_cookie_replay_is_bounded(self):
+        async def run():
+            p=DyParser();calls=[]
+            async def fetch(session,url):
+                calls.append(url)
+                session.cookie_jar.update_cookies({'ttwid':'anonymous-test-session'})
+                return '<html></html>','https://www.iesdouyin.com/share/video/'+ID+'/'
+            with patch.object(p,'fetch_page',side_effect=fetch):
+                with self.assertRaises(HTTPException):await p.parse('https://www.iesdouyin.com/share/video/'+ID+'/')
+            self.assertEqual(len(calls),2)
+        asyncio.run(run())
+
+    def test_verification_page_is_never_replayed(self):
+        p=DyParser()
+        async def fetch(session,url):
+            session.cookie_jar.update_cookies({'ttwid':'anonymous-test-session'})
+            return '<script src="https://cdn.test/waf-jschallenge.js"></script>',url
+        with patch.object(p,'fetch_page',side_effect=fetch) as call:
+            with self.assertRaises(HTTPException):asyncio.run(p.parse('https://www.iesdouyin.com/share/video/'+ID+'/'))
+        self.assertEqual(call.call_count,1)
+
     def test_fetch_upstream_failure_redirect_and_fragmented_response(self):
         async def run():
             body=page({'aweme_id':ID,'images':[{'url_list':['https://cdn.test/a.jpg']}]}).encode()

@@ -76,12 +76,18 @@ not rewritten and file headers are checked before returning them. This does not
 establish that a rendition is the creator's original upload or guarantee that no
 watermark was embedded by the creator.
 
-No login cookies, signature generation or access-restriction bypass is used.
+No account/login cookies, signature generation or access-restriction bypass is used.
+A normal public page can issue an anonymous `ttwid` cookie. If that first response
+contains no metadata, the parser repeats the public page once with the new cookie
+in the same request session. It never persists cookies or replays verification
+challenges. Douyin requests ignore environment proxies; `X_PROXY` is used only
+by X/Twitter code paths.
 If Douyin withholds public metadata, the API returns an explicit 422 error rather
 than an empty success; upstream/network/media failures return 502. Public access
 varies by post and environment. The supplied regression link
 `https://v.douyin.com/P8m2VakJop8/` resolved to `7693103726027205561`, but public
-share responses on 2026-10-07 were intermittent. A successful cookie-free request
+share responses on 2026-10-07 were intermittent. A successful logged-out request using a transient, automatically issued anonymous
+`ttwid` cookie
 returned five WebP images; full downloads and FFprobe confirmed all five were
 1344 x 2400. Later requests returned a verification page, correctly reported as an
 error. Public video test posts did not provide accessible playback metadata, so
