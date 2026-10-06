@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     download_path: str = "/data"
     download_works: int = 5
     file_expire_seconds: int = 3600
+    x_proxy: Optional[str] = None
 
     # ---------------- Redis ----------------
     redis_host: str = "localhost"

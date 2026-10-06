@@ -28,6 +28,27 @@
 - 图片
 - 视频
 
+### X（Twitter）图片和视频
+
+支持 `x.com` / `twitter.com` 的公开推文链接，继续使用 `POST /api/v1/download`：
+
+```json
+{"input_path":"https://x.com/用户名/status/推文数字ID"}
+```
+
+返回 `platform: "𝕏"`，`data` 为媒体下载链接列表，支持多张照片、多段视频和混合内容。
+视频通过服务端流式下载，文件名为 `清理后的文案_推文ID_视频序号.mp4`，过滤链接、控制字符和文件名非法字符，
+文案限制为 150 UTF-8 字节；无文案时使用 `视频`。链接默认一小时有效，过期后重新解析即可。
+照片使用 `pbs.twimg.com/media` 的 `name=orig` 原尺寸地址，视频选择最高可用画质 MP4。
+无需配置 Cookie；无媒体、已删除、私密或需要登录的推文可能返回错误。
+服务器需要能访问 X 相关接口，客户端也需要能访问视频 CDN；直链请及时下载。
+NAS 无法直连时，可在 `.env` 设置 `X_PROXY=http://host.docker.internal:7890`（替换为实际代理地址）；仅 X 解析使用此代理。
+解析使用 [yt-dlp 的 Twitter 解析器](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/twitter.py)。
+优先依次尝试 FxTwitter、VXTwitter 公共接口（会向它们发送推文 ID），保留混合媒体顺序，
+仅接受对应推文的 `pbs.twimg.com/media` 图片和 `video.twimg.com` MP4，不返回头像或封面。
+媒体接口均失败时再尝试 yt-dlp 视频解析。
+媒体接口优先直连，传输失败时使用 `X_PROXY` 重试，避免代理不稳定导致连续解析超时。
+
 ### TODO
 
 [ ] 抖音

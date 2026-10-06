@@ -8,6 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
 from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import StreamingResponse
+import requests
+from urllib.parse import quote
+from fastapi import Request
+from util.x_media import get_media
 
 from config.config import settings
 from parser.dy_parse import DyParser
@@ -15,6 +20,7 @@ from parser.parser_factory import ParserFactory
 from parser.w51_parse import W51Parser
 from parser.wb_parse import WbParser
 from parser.xhs_parse import XhsParser
+from parser.x_parse import XParser
 from util import ip_util, cache_util
 
 logger.add(
@@ -30,6 +36,7 @@ logger.add(
 ParserFactory.register(XhsParser())
 ParserFactory.register(DyParser())
 ParserFactory.register(WbParser())
+ParserFactory.register(XParser())
 ParserFactory.register(W51Parser())
 
 
@@ -136,6 +143,49 @@ def get_video(token: str):
     if not path or not os.path.exists(path):
         raise HTTPException(404, "Video expired or missing")
     return FileResponse(path, media_type = "video/mp4")
+
+
+@api_router.get('/x-media/{token}/{filename}')
+def download_x_media(token: str, filename: str, request: Request):
+    media = get_media(token)
+    if not media or filename != media['filename']:
+        raise HTTPException(404, '下载链接已过期，请重新解析推文')
+    headers = {'User-Agent': 'AnyDownloadScript'}
+    if request.headers.get('range'):
+        headers['Range'] = request.headers['range']
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        try:
+            upstream = session.get(media['url'], headers=headers, stream=True, timeout=(4, 30))
+            if upstream.status_code not in (200, 206) and settings.x_proxy:
+                upstream.close()
+                upstream = session.get(media['url'], headers=headers, stream=True, timeout=(8, 30),
+                                       proxies={'https': settings.x_proxy})
+        except requests.RequestException:
+            if not settings.x_proxy:
+                raise
+            upstream = session.get(media['url'], headers=headers, stream=True, timeout=(8, 30),
+                                   proxies={'https': settings.x_proxy})
+        if upstream.status_code not in (200, 206):
+            upstream.close()
+            session.close()
+            raise HTTPException(502, '视频 CDN 暂时不可用，请重新解析或稍后重试')
+    except requests.RequestException as exc:
+        session.close()
+        raise HTTPException(502, '连接视频 CDN 失败，请稍后重试') from exc
+    def chunks():
+        try:
+            yield from upstream.iter_content(256 * 1024)
+        finally:
+            upstream.close()
+            session.close()
+    output_headers = {'Content-Disposition': f"attachment; filename*=UTF-8''{quote(filename, safe='')}"}
+    for key in ('Content-Length', 'Content-Range', 'Accept-Ranges'):
+        if upstream.headers.get(key):
+            output_headers[key] = upstream.headers[key]
+    return StreamingResponse(chunks(), status_code=upstream.status_code,
+                             media_type='video/mp4', headers=output_headers)
 
 
 # =========================
