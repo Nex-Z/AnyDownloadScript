@@ -21,12 +21,63 @@
 
 [✅] 抖音
 
-- 图片
+- 图片（图集）
+- 视频（公开播放版本；支持无平台水印播放地址）
 
 [✅] 微博
 
 - 图片
 - 视频
+
+### 抖音图集和视频
+
+支持抖音分享短链、`/note/<id>`、`/video/<id>` 及对应 `iesdouyin.com` 分享页面，
+继续使用 `POST /api/v1/download`；也可直接传入包含分享链接的文本。例如：
+
+```json
+{"input_path":"https://v.douyin.com/QCw6Aerg1jo/"}
+```
+
+成功响应的 `platform` 为 `抖音`，`data` 始终为媒体 URL 列表，兼容现有 iOS 快捷指令。
+只读取与请求作品 ID 匹配的公开结构化元数据，不把头像、封面或推荐作品当作下载结果。
+
+- 图集：按作品顺序返回全部图片，保留 CDN 签名、WebP 格式和地址中的变换参数；
+  逐张检查可访问性及实际文件头。任何图片缺失或不可用时返回错误，不返回不完整图集。
+  返回地址可能是平台提供的变换或压缩版本，不保证为上传原图。
+- 视频：优先使用公开元数据中的播放版本，按分辨率、码率排序；不返回带水印的
+  `download_addr` 或 `playwm` 地址。若分享页只提供 `playwm` 和公开视频 URI，使用普通
+  `https://www.douyin.com/aweme/v1/play/?video_id=<uri>&ratio=1080p` 播放端点，
+  验证实际 MP4 文件头；1080p 不可用时再验证默认播放版本。URI 必须来自请求作品的元数据，
+  不改写签名 URL，也不转码或处理视频画面。
+
+视频 URI 路径参考了[公开播放端点示例](https://github.com/belingud/douyin-downloader-skill/blob/main/scripts/download.py#L310-L320)，
+并独立进行了 NAS 实测。该方案可取得公开 HD 播放版本，**不等同于证明取得创作者上传的原始文件**；
+也不能保证所有作品没有创作者自行嵌入的水印，或都存在可访问的无平台水印版本。
+
+实现保持轻量、未登录：没有新增依赖、浏览器服务、账号 Cookie 管理或签名生成。
+普通公开页面可能自动签发匿名 `ttwid` Cookie；若刚签发时页面仍未提供媒体元数据，
+最多额外请求一次该公开页面。Cookie 仅保留在本次解析的内存会话内，结束即丢弃，
+不会持久化，也不会执行或重放验证挑战。匿名会话 Cookie 不代表账号登录。
+
+抖音页面和媒体请求不读取环境代理变量，不使用 `X_PROXY`；该配置仅供 X/Twitter 路径使用。
+这不排除路由器等外部网络对出口的影响。无需修改系统代理、VPN 或网络安全设置。
+
+公开元数据被上游隐藏、仅出现验证页、或无法取得可用播放信息时，API 返回明确的 422 错误，
+不会把空列表当作成功；页面、网络或媒体下载验证失败返回 502。快捷指令应检查响应状态及
+`code`，失败时不要把 `data: null` 当作下载列表。平台公开访问会随作品、会话和环境变化；
+本次成功验收不代表所有链接或每次请求都可靠。
+
+本地回归测试从项目根目录运行：
+
+```powershell
+Get-Content -Raw scripts/check_douyin.py | uv run python -
+Get-Content -Raw scripts/check_parsers.py | uv run python -
+Get-Content -Raw scripts/check_x.py | uv run python -
+```
+
+共 38 项组合回归：17 项抖音、11 项其他解析器、10 项 X，覆盖作品匹配、图集完整性、
+WebP/签名地址、视频 URI 和 HD 回退、匿名 Cookie 的有界重试、验证页停止及真实 HTTP 文件头验证。
+这些回归包含模拟数据和本地 HTTP 服务，不能代替真实平台验收。
 
 ### X（Twitter）图片和视频
 
@@ -49,63 +100,12 @@ NAS 无法直连时，可在 `.env` 设置 `X_PROXY=http://host.docker.internal:
 媒体接口均失败时再尝试 yt-dlp 视频解析。
 媒体接口优先直连，传输失败时使用 `X_PROXY` 重试，避免代理不稳定导致连续解析超时。
 
-### TODO
-
-[ ] 抖音
-
-- 视频
-
 ## 快捷指令
 
 分享链接，复制到手机上，打开
 https://www.icloud.com/shortcuts/971541b983a345399e19af1445aac406
 
 声明：脚本仅供学习交流使用，请勿用于商业用途。
-
-### Douyin public media extraction
-
-Douyin share links and `/note/<id>` / `/video/<id>` links use public structured
-post metadata. Image galleries preserve their order, signed CDN URLs and formats
-(including WebP and CDN transformations). Every image must have an accessible,
-valid image response; an incomplete gallery is an error.
-
-Videos use the highest-resolution available playback rendition, with bitrate as
-a tie breaker, and return a URL list compatible with the existing API/Shortcut.
-Watermarked `download_addr` and `playwm` addresses are excluded. When public
-metadata contains only `playwm` and a video URI, the parser uses the ordinary
-`https://www.douyin.com/aweme/v1/play/?video_id=<uri>&ratio=1080p` playback
-endpoint, falling back to the default rendition if HD is unavailable. The URI
-must come from the requested post metadata. Signed URLs are not rewritten, and
-file headers are checked before returning them. This does not
-establish that a rendition is the creator's original upload or guarantee that no
-watermark was embedded by the creator.
-
-No account/login cookies, signature generation or access-restriction bypass is used.
-A normal public page can issue an anonymous `ttwid` cookie. If that first response
-contains no metadata, the parser repeats the public page once with the new cookie
-in the same request session. It never persists cookies or replays verification
-challenges. Douyin requests ignore environment proxies; `X_PROXY` is used only
-by X/Twitter code paths.
-If Douyin withholds public metadata, the API returns an explicit 422 error rather
-than an empty success; upstream/network/media failures return 502. Public access
-varies by post and environment. The supplied regression link
-`https://v.douyin.com/P8m2VakJop8/` resolved to `7693103726027205561`, but public
-share responses on 2026-10-07 were intermittent. A successful logged-out request using a transient, automatically issued anonymous
-`ttwid` cookie
-returned five WebP images; full downloads and FFprobe confirmed all five were
-1344 x 2400. Later requests returned a verification page, correctly reported as an
-error. The supplied video `https://v.douyin.com/QCw6Aerg1jo/` resolved to
-`7670013728340342970`. Its public URI playback endpoint was verified on NAS:
-default playback was 720 x 1280; `ratio=1080p` was 1080 x 1920, H.264, 13.30
-seconds, 4,932,374 bytes, fully decoded by FFmpeg. No Douyin watermark was visible
-in sampled frames. This establishes a public HD rendition, not original upload
-bytes or a guarantee for every post.
-
-Run dedicated offline and HTTP-probe regressions from the project root:
-
-```powershell
-Get-Content -Raw scripts/check_douyin.py | uv run python -
-```
 
 ## NAS 部署（运行产物）
 
@@ -152,3 +152,30 @@ Get-Content -Raw scripts/smoke.py | ssh nas 'docker exec -i anydownloadscript-ap
 
 验收通过本地生成的 HLS 样本检查解析接口、FFmpeg 下载、Redis 映射、视频完整下载及 Range 请求，
 并自动清理样本；这不代表各第三方平台的线上分享链接始终有效。
+
+### 本次抖音验收记录
+
+本次验收发生于 2026-10-07（NAS 时区 UTC+8，对应 UTC 2026-10-06）。
+NAS 运行产物版本为 `20261006-201519`，应用源码提交为
+`6967698fb3783ab048953f7d43b70c1517f1d923`。本次文档更新不另行部署。
+
+- 图集 `P8m2VakJop8` 对应作品 `7693103726027205561`，完整下载并解码了 5 张
+  1344 × 2400 WebP。随后 NAS 记录了三个用户图集请求成功，分别返回 5、5、8 张图片。
+- 视频 `QCw6Aerg1jo` 对应作品 `7670013728340342970`。默认公开播放版本为
+  720 × 1280；1080p 版本为 1080 × 1920、H.264、13.30 秒、4,932,374 字节。
+  NAS 实际 API 连续两次返回 200 和单个视频 URL；返回 URL 完整下载后通过 FFmpeg 解码。
+  抽查 0、4、8、12.8 秒画面未见抖音水印，未证明为上传原始字节或逐帧验证所有水印。
+- 用户随后确认 iOS 快捷指令图集及上述视频下载可用。API 日志只记录解析响应，
+  不能独立确认手机已完成保存；此处客户端结论来自用户反馈。
+- 本地和部署后的字节码运行环境均通过上述 38 项回归；NAS 的
+  `scripts/smoke.py` 通过健康检查、HLS/FFmpeg、Redis 映射及 HTTP 200/206 Range 验证。
+  容器健康，部署解析器校验值匹配产物清单；`.env`、`data/`、`logs/` 保留。
+
+此次更新的前一版本 `20261006-200258` 及配置备份保留在
+`rollback/20261006-201519/`。若需回滚，在 NAS 应用目录恢复备份的 `compose.yaml`
+和 `release.env`，再执行上述 Compose 启动命令；保留现有 `.env` 和数据目录。
+
+图集验收期间，同一运行版本 `20261006-200258` 曾先返回 422，随后返回成功，
+另有上游验证页的诊断记录。这支持公开访问存在波动，但不能仅凭记录确定是限流、
+会话还是外部出口策略导致。上述视频原有 422 另有已确认的播放候选选择缺陷，
+本次已修复；不能把所有失败都归因于上游波动。未修改代理或网络设置。
