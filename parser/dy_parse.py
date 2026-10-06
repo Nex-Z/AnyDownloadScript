@@ -151,7 +151,18 @@ class DyParser(BaseParser):
                 if "playwm" not in parsed.path.lower() and "watermark=1" not in parsed.query.lower():
                     if url not in urls:
                         urls.append(url)
-        # download_addr is generally watermarked. Do not rewrite playwm or construct URLs.
+        # A share page can expose only playwm plus a public video URI. The ordinary
+        # public playback endpoint serves that URI without account cookies or signatures.
+        # Prefer the tested 1080p rendition; validate it, then the default rendition.
+        if not urls:
+            for key in ("play_addr_h264", "play_addr", "playAddr"):
+                address = video.get(key)
+                uri = address.get("uri") if isinstance(address, dict) else None
+                if isinstance(uri, str) and re.fullmatch(r"[A-Za-z0-9_-]{8,128}", uri):
+                    endpoint = f"https://www.douyin.com/aweme/v1/play/?video_id={uri}"
+                    urls = [endpoint + "&ratio=1080p", endpoint]
+                    break
+        # download_addr is generally watermarked and remains excluded.
         if not urls:
             raise HTTPException(422, "Douyin did not provide a public non-watermarked playback URL")
         return "video", [urls]

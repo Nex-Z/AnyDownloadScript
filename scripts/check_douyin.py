@@ -65,6 +65,25 @@ class DouyinChecks(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 DyParser.extract_resources(page({'aweme_id':ID,'video':{'play_addr':addr}}),ID)
 
+    def test_public_uri_fallback_prefers_1080p_without_rewriting_playwm(self):
+        post={'aweme_id':ID,'images':None,'video':{'play_addr':{
+            'uri':'v1e00fgi0000d9olntvog65gksmb6cig',
+            'url_list':['https://aweme.snssdk.com/aweme/v1/playwm/?video_id=watermark-preview']},'bit_rate':None}}
+        kind,groups=DyParser.candidates(post)
+        self.assertEqual(kind,'video')
+        self.assertEqual(groups,[['https://www.douyin.com/aweme/v1/play/?video_id=v1e00fgi0000d9olntvog65gksmb6cig&ratio=1080p',
+                                 'https://www.douyin.com/aweme/v1/play/?video_id=v1e00fgi0000d9olntvog65gksmb6cig']])
+        self.assertEqual(DyParser.extract_resources(page(post),ID),[groups[0][0]])
+
+    def test_public_uri_fallback_rejects_malformed_identifiers(self):
+        for uri in [None,'','../private','https://evil.test/a','abc&ratio=bad','uri?token=x']:
+            with self.assertRaises(HTTPException):
+                DyParser.candidates({'aweme_id':ID,'video':{'play_addr':{'uri':uri}}})
+
+    def test_public_uri_fallback_does_not_replace_valid_ranked_variants(self):
+        post={'aweme_id':ID,'video':{'play_addr':{'uri':'valid-public-uri','url_list':['https://cdn.test/direct.mp4']}}}
+        self.assertEqual(DyParser.candidates(post),('video',[['https://cdn.test/direct.mp4']]))
+
     def test_malformed_state_not_executed(self):
         self.assertEqual(DyParser.extract_resources('<script>window._ROUTER_DATA={broken};</script>',ID),[])
 
@@ -87,6 +106,7 @@ class DouyinChecks(unittest.TestCase):
                     p=DyParser()
                     self.assertEqual(await p.validate_media(session,'image',[[origin+'/missing',origin+'/webp'],[origin+'/jpg']]),[origin+'/webp',origin+'/jpg'])
                     self.assertEqual(await p.validate_media(session,'video',[[origin+'/video']]),[origin+'/video'])
+                    self.assertEqual(await p.validate_media(session,'video',[[origin+'/missing',origin+'/video']]),[origin+'/video'])
                     for kind in ['image','video']:
                         with self.assertRaises(HTTPException) as error:
                             await p.validate_media(session,kind,[[origin+'/jpg'],[origin+'/html']])

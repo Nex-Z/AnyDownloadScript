@@ -71,8 +71,12 @@ valid image response; an incomplete gallery is an error.
 
 Videos use the highest-resolution available playback rendition, with bitrate as
 a tie breaker, and return a URL list compatible with the existing API/Shortcut.
-Watermarked `download_addr` and `playwm` addresses are excluded. Playback URLs are
-not rewritten and file headers are checked before returning them. This does not
+Watermarked `download_addr` and `playwm` addresses are excluded. When public
+metadata contains only `playwm` and a video URI, the parser uses the ordinary
+`https://www.douyin.com/aweme/v1/play/?video_id=<uri>&ratio=1080p` playback
+endpoint, falling back to the default rendition if HD is unavailable. The URI
+must come from the requested post metadata. Signed URLs are not rewritten, and
+file headers are checked before returning them. This does not
 establish that a rendition is the creator's original upload or guarantee that no
 watermark was embedded by the creator.
 
@@ -90,8 +94,12 @@ share responses on 2026-10-07 were intermittent. A successful logged-out request
 `ttwid` cookie
 returned five WebP images; full downloads and FFprobe confirmed all five were
 1344 x 2400. Later requests returned a verification page, correctly reported as an
-error. Public video test posts did not provide accessible playback metadata, so
-actual video quality and watermark absence have not yet been established.
+error. The supplied video `https://v.douyin.com/QCw6Aerg1jo/` resolved to
+`7670013728340342970`. Its public URI playback endpoint was verified on NAS:
+default playback was 720 x 1280; `ratio=1080p` was 1080 x 1920, H.264, 13.30
+seconds, 4,932,374 bytes, fully decoded by FFmpeg. No Douyin watermark was visible
+in sampled frames. This establishes a public HD rendition, not original upload
+bytes or a guarantee for every post.
 
 Run dedicated offline and HTTP-probe regressions from the project root:
 
