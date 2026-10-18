@@ -14,7 +14,7 @@
 - 图片
 - 视频（有水印）
 
-小红书图片只返回 `fileId` 对应的原尺寸地址（`https://ci.xiaohongshu.com/<fileId>`），无需登录。
+小红书图片只返回 `fileId` 对应的原尺寸地址（`https://ci.xiaohongshu.com/<fileId>`），默认匿名访问；遇到上游验证时可能需要有效浏览器 Cookie。
 返回前会并发验证图片地址可访问且响应包含图片文件头，不添加缩放或格式转换参数。
 任一图片缺少原图标识、原图不可访问或验证超时，整个请求明确失败，不返回部分结果，
 也不回退到 H5、Open Graph 等可能带水印的预览图。
@@ -73,11 +73,81 @@
 Get-Content -Raw scripts/check_douyin.py | uv run python -
 Get-Content -Raw scripts/check_parsers.py | uv run python -
 Get-Content -Raw scripts/check_x.py | uv run python -
+Get-Content -Raw scripts/check_reliability.py | uv run python -
+Get-Content -Raw scripts/check_xhs_fallback.py | uv run python -
 ```
 
-共 38 项组合回归：17 项抖音、11 项其他解析器、10 项 X，覆盖作品匹配、图集完整性、
+共 56 项组合回归：17 项抖音、11 项其他解析器、10 项 X、9 项稳定性、9 项小红书回退测试，覆盖作品匹配、图集完整性、
 WebP/签名地址、视频 URI 和 HD 回退、匿名 Cookie 的有界重试、验证页停止及真实 HTTP 文件头验证。
 这些回归包含模拟数据和本地 HTTP 服务，不能代替真实平台验收。
+
+### 下载稳定性与小红书验证
+
+- 小红书兼容移动端 `noteData` 和桌面端 `noteDetailMap` 中的 `note`，按最终链接的作品 ID 匹配，避免返回推荐作品。
+  仅正常页面缺少资源时尝试一次桌面页面；登录或验证码跳转停止当前页面请求，不访问验证端点。
+  主路径遇到验证、拒绝访问、资源缺失或网络故障时，自动尝试一次普通移动 Safari 分享请求
+  （含正常 Referer/Accept）。回退仍按作品 ID 提取全部原图并验证，不返回预览图。
+  429、笔记不存在、配置错误或原图验证失败不触发回退；两条路径都遇到验证时才进入冷却。
+  每次页面获取含跳转/重试最多 10 秒，整个 API 解析仍限制 60 秒；不执行挑战脚本或自动提交验证码。
+- 小红书、抖音页面及媒体探测遇到连接异常或 500/502/503/504，等待 0.4 秒后最多重试一次；403/429 不自动重试。
+  每次 API 解析总预算 60 秒（含排队），抖音图集最多并发验证 4 张，仍须全部通过才返回。
+- 单进程最多同时处理 2 个小红书/抖音解析任务，同一完整链接的并发请求合并。
+  同一链接遇到验证码或 429 后冷却 60 秒，避免快捷指令连续点击反复请求上游；最多保留 256 条冷却记录。
+  当前 NAS 使用单 worker；多 worker 场景的合并和冷却不跨进程。不会缓存成功媒体地址。
+- 错误响应保留 `code/msg/platform/data`，新增 `error_code/stage/retryable/retry_after/request_id`；
+  响应头含 `X-Request-ID`，冷却响应含 `Retry-After`。`retryable=false` 的验证错误需要先处理验证，不应自动循环重试。
+  快捷指令应先判断 HTTP 状态或 `code == 200`，失败时显示 `msg`；只有成功才遍历 `data` 保存图片。
+- 日志记录请求编号、上游域名/路径、状态、阶段、资源数与总耗时，不再打印分享全文、查询签名和媒体 URL 列表。
+
+可选配置：在 NAS 的 `/vol1/1000/Server/AnyDownloadScript/.env` 增加
+`XHS_COOKIE="浏览器中复制的 Cookie"`，然后执行
+`docker compose --env-file release.env up -d --force-recreate --wait`。
+从本人浏览器打开相同笔记，按页面提示完成验证；开发者工具的 Network 中找到该笔记请求，
+复制请求头 Cookie 到 NAS 配置。不要把 Cookie 发到日志或提交进 Git。更换 Cookie 并重建容器也会清除旧的进程内冷却。
+Cookie 仅发送给 HTTPS 的 `xiaohongshu.com` 域及其子域，不发送给短链站、图片 CDN 或其他平台。
+代码不会读取本机浏览器凭据，也不会自动解决验证码。有效 Cookie 是可选恢复路径，不能保证消除平台风控。
+
+方案参考：[XHS-Downloader 的 Cookie 配置说明](https://github.com/JoeanAmier/XHS-Downloader#cookie)
+及 [media-parser 的移动端/桌面端页面结构说明](https://github.com/ucmao/media-parser/blob/main/docs/parsers/xiaohongshu.md)。
+本项目没有引入第三方解析服务、浏览器常驻服务或签名生成依赖。
+
+2026-10-18 第一阶段 NAS 验收（回退接入前）：运行产物 `20261018-022550`；当时 47 项回归在本地和 NAS 镜像中通过。
+真实抖音链接 `NgLh7QQjUuI` 用时约 1.21 秒返回 2 张图，两张均完整下载并通过 FFmpeg 解码。
+小红书 `9i4kpnmfIqc` 仍被上游要求验证，首次约 0.35 秒返回 `VERIFICATION_REQUIRED`，
+立即重复调用约 0.002 秒返回冷却错误，日志确认没有再次请求上游。NAS 尚未配置 Cookie，
+所以未验收 Cookie 恢复访问，也未宣称小红书受限链接已恢复下载。
+健康检查、Redis、HLS 下载、HTTP 200/206 验收通过；原 `.env`、数据和日志保留，
+回滚配置在 `rollback/20261018-022550/`，上一镜像为 `20261006-201519`。
+
+### 小红书备用方案实测（2026-10-18）
+
+测试输入为 App 分享链接 `https://xhslink.cn/o/9i4kpnmfIqc`，作品 ID
+`6ad0ec42000000001500452d`，标题“谁还没有这壁纸！！！🔥🔥🔥”；所有实测均从 NAS 发起，未配置 Cookie。
+
+| 候选方案 | 结果 | 接入决定 |
+| --- | --- | --- |
+| 现有 iOS/Edge 请求头 | 跳转 `/website-login/captcha`，0 张图片 | 保留原主路径，允许兼容回退 |
+| media-parser 的桌面请求方式 | 跳转 `/login`，0 张图片 | 未作为新回退接入 |
+| media-parser 的移动 Safari 请求方式 | requests 与 aiohttp 均成功，匹配 18 张图片；全部原图下载和 FFmpeg 解码通过 | 接入一次有界自动回退 |
+| 沐杰公开接口 `api.mu-jie.cc/xhs` | HTTP 200，但业务码 -4：请求频率过高或服务器 IP 被封禁 | 不接入 |
+| 飞飞接口 `ffapi.cn/int/v1/xiaohongshu` | HTTP 200，但业务码 -1：接口已经关闭 | 不接入 |
+| 游漫接口站 `api.youman.team` | 文档入口 TLS 连接失败，无法进行图片解析验收 | 不接入 |
+
+参考请求头来源：[media-parser 解析器源码](https://github.com/ucmao/media-parser/blob/main/src/parsers/xiaohongshu_parser.py)。
+另审阅了 [XHS-Downloader 请求实现](https://github.com/JoeanAmier/XHS-Downloader/blob/master/source/application/request.py)，
+未启动该完整程序，也未将它计为实测成功方案。公开接口仅用于这次比较，生产回退不向第三方发送分享链接。
+18 张原图共 17,941,491 字节，尺寸为 1440×2014 或 1440×3130；“原图”指页面 `fileId` 对应的
+无缩放参数 `ci.xiaohongshu.com` 文件，不代表已证明与创作者上传字节完全相同。
+单个链接的成功不保证所有笔记永久可用。快捷指令继续使用同一个 `POST /api/v1/download`，成功响应结构不变。
+
+已部署运行产物 `20261018-023835`，NAS 56 项回归及健康/Redis/HLS/HTTP 200/206 验收通过，
+运行字节码与产物清单 SHA-256 一致，`.env` 未改动。回滚配置位于
+`rollback/20261018-023835/`，上一镜像为 `20261018-022550`。
+原 App 分享全文与同一短链连续两次经真实 API 返回 18 张原图，耗时 0.877 / 0.860 秒；
+服务日志确认每次均为主路径遇到验证后 `mobile_safari` 回退成功。
+另一个先前失败的链接 `AY3rEHaHUKz` 同样回退成功，返回 3 张图片，耗时 0.975 秒。
+部署后 API 返回的 18 张图片再次完整下载、FFmpeg 解码通过，逐张 SHA-256 与前述方案实测一致。
+NAS 仍未配置 Cookie；手机快捷指令的相册保存结果需以手机实际操作为准。
 
 ### X（Twitter）图片和视频
 

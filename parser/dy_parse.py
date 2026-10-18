@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from lxml import etree
 from core.enums import Platform
 from parser.base_parse import BaseParser
+from util.upstream import ParseError, read_url
 
 
 class DyParser(BaseParser):
@@ -38,22 +39,18 @@ class DyParser(BaseParser):
         for _ in range(6):
             if not self.allowed_url(url):
                 raise HTTPException(422, "Douyin link redirected to an unsupported site")
-            async with session.get(url, allow_redirects=False) as response:
-                if response.status in (301, 302, 303, 307, 308):
-                    location = response.headers.get("Location")
-                    if not location:
-                        raise HTTPException(502, "Invalid Douyin share redirect")
-                    url = urljoin(url, location)
-                    continue
-                if response.status != 200:
-                    raise HTTPException(502, f"Douyin page unavailable (HTTP {response.status})")
-                try:
-                    body = await response.content.readexactly(4 * 1024 * 1024 + 1)
-                except asyncio.IncompleteReadError as exc:
-                    body = exc.partial
-                if len(body) > 4 * 1024 * 1024:
-                    raise HTTPException(502, "Douyin page response too large")
-                return body.decode("utf-8", errors="replace"), url
+            status, headers, body, _ = await read_url(session, url, allow_redirects=False)
+            if status in (301, 302, 303, 307, 308):
+                location = headers.get("Location")
+                if not location:
+                    raise HTTPException(502, "Invalid Douyin share redirect")
+                url = urljoin(url, location)
+                continue
+            if status == 429:
+                raise ParseError(429, "抖音请求受限，请稍后重试", "UPSTREAM_RATE_LIMIT", retryable=True, retry_after=60)
+            if status != 200:
+                raise ParseError(502, f"抖音页面获取失败（HTTP {status}）", "UPSTREAM_HTTP_ERROR", retryable=status >= 500)
+            return body.decode("utf-8", errors="replace"), url
         raise HTTPException(502, "Too many Douyin share redirects")
 
     @staticmethod
@@ -181,22 +178,29 @@ class DyParser(BaseParser):
         async def select(index, urls):
             for url in urls:
                 try:
-                    async with session.get(url, headers={"Range": "bytes=0-63"}) as response:
-                        if response.status not in (200, 206):
-                            continue
-                        try:
-                            prefix = await response.content.readexactly(64)
-                        except asyncio.IncompleteReadError as exc:
-                            prefix = exc.partial
-                        valid = XhsParser.is_image_header(prefix) if kind == "image" else (
-                            len(prefix) >= 12 and prefix[4:8] == b"ftyp")
-                        if valid:
-                            return url
-                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    status, _, prefix, _ = await read_url(session, url,
+                        headers={"Range": "bytes=0-63"}, prefix=True, limit=64, stage="media")
+                    if status not in (200, 206):
+                        continue
+                    valid = XhsParser.is_image_header(prefix) if kind == "image" else (
+                        len(prefix) >= 12 and prefix[4:8] == b"ftyp")
+                    if valid:
+                        return url
+                except (aiohttp.ClientError, asyncio.TimeoutError, ParseError):
                     continue
-            raise HTTPException(502, f"Douyin media {index} unavailable or invalid; please retry later")
+            raise ParseError(502, f"第 {index} 个抖音媒体不可用，未返回不完整图集，请稍后重试",
+                             "MEDIA_UNAVAILABLE", "media", True)
         # Limit traffic and retain complete gallery ordering.
-        return [await select(index, urls) for index, urls in enumerate(groups, 1)]
+        semaphore = asyncio.Semaphore(4)
+        async def limited(index, urls):
+            async with semaphore:
+                return await select(index, urls)
+        results = await asyncio.gather(*(limited(i, urls) for i, urls in enumerate(groups, 1)),
+                                       return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
 
     async def parse(self, url) -> list[str]:
         try:
@@ -218,7 +222,8 @@ class DyParser(BaseParser):
                     # Do not replay verification challenges. A normal public response may
                     # issue its anonymous session cookie only after serving an empty shell.
                     if "waf-jschallenge" in content or "window.byted_acrawler.init" in content:
-                        break
+                        raise ParseError(422, "抖音要求安全验证，请稍后重试或重新复制分享链接",
+                                         "VERIFICATION_REQUIRED", retry_after=60)
                     if attempt == 0 and resolved.rstrip("/") != canonical.rstrip("/"):
                         next_url = canonical
                     elif cookie_issued and attempt < 2:
@@ -228,6 +233,7 @@ class DyParser(BaseParser):
                     had_cookie = has_anonymous_cookie()
                     content, resolved = await self.fetch_page(session, next_url)
                     cookie_issued = not had_cookie and has_anonymous_cookie()
-                raise HTTPException(422, "Douyin public page did not provide media. Login or verification may be required, or the post may be unavailable; access restrictions were not bypassed.")
+                raise ParseError(422, "抖音公开页面未提供该作品资源，请重新复制分享链接或稍后重试",
+                                 "METADATA_UNAVAILABLE")
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise HTTPException(502, "Douyin connection failed or timed out; please retry later") from exc

@@ -1,5 +1,7 @@
 # main.py
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional, Any
 
@@ -22,6 +24,8 @@ from parser.wb_parse import WbParser
 from parser.xhs_parse import XhsParser
 from parser.x_parse import XParser
 from util import ip_util, cache_util
+from util.upstream import request_id, safe_url
+from util.parse_guard import parse_guard
 
 logger.add(
     "logs/log_{time}.log",  # 文件名可以带时间占位
@@ -75,6 +79,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan = lifespan)
 api_router = APIRouter(prefix = "/api/v1")
 
+
+@app.middleware("http")
+async def request_context(request, call_next):
+    identity = uuid.uuid4().hex[:12]
+    token = request_id.set(identity)
+    request.state.request_id = identity
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = identity
+        if request.url.path == "/api/v1/download":
+            logger.info("request_id={} event=download status={} elapsed_ms={}",
+                        identity, response.status_code, round((time.monotonic() - started) * 1000))
+        return response
+    finally:
+        request_id.reset(token)
+
 # =========================
 # 中间件
 # =========================
@@ -121,8 +142,8 @@ async def download_endpoint(req: DownloadRequest):
     """
     接收字符串，解析资源，返回文件下载
     """
-    logger.info(f"接收到请求: {req.input_path}")
     url = await parse_input_string(req.input_path)
+    logger.info("request_id={} event=parse url={}", request_id.get(), safe_url(url))
     if not url:
         return ResponseModel.error("无法解析输入内容")
 
@@ -131,9 +152,12 @@ async def download_endpoint(req: DownloadRequest):
         return ResponseModel.error("不支持的平台", 500)
 
     platform = await parser.get_platform()  # ⚠️ 注意加 await
-    urls = await parser.parse(url)
+    if isinstance(parser, (XhsParser, DyParser)):
+        urls = await parse_guard.run(parser, url)
+    else:
+        urls = await parser.parse(url)
 
-    logger.info(f"解析结果: {urls}")
+    logger.info("request_id={} event=parsed platform={} count={}", request_id.get(), platform.value, len(urls))
     return ResponseModel(platform = platform.value, data = urls)
 
 
@@ -208,9 +232,17 @@ app.include_router(api_router)
 # =========================
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
+    body = ResponseModel.error(exc.detail, exc.status_code).model_dump()
+    body["request_id"] = getattr(request.state, "request_id", "-")
+    body["error_code"] = getattr(exc, "error_code", "PARSE_ERROR")
+    body["stage"] = getattr(exc, "stage", "parse")
+    body["retryable"] = getattr(exc, "retryable", False)
+    body["retry_after"] = getattr(exc, "retry_after", None)
+    logger.warning("request_id={} event=failed status={} code={} stage={} detail={}",
+                   body["request_id"], exc.status_code, body["error_code"], body["stage"], exc.detail)
     return JSONResponse(
         status_code=exc.status_code,
-        content=ResponseModel.error(exc.detail, exc.status_code).model_dump(),
+        content=body,
         headers=exc.headers,
     )
 

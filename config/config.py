@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import SecretStr
 
 
 class Settings(BaseSettings):
@@ -14,6 +15,7 @@ class Settings(BaseSettings):
     download_works: int = 5
     file_expire_seconds: int = 3600
     x_proxy: Optional[str] = None
+    xhs_cookie: Optional[SecretStr] = None
 
     # ---------------- Redis ----------------
     redis_host: str = "localhost"

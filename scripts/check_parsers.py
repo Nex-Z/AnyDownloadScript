@@ -93,7 +93,7 @@ class ParserChecks(unittest.TestCase):
         parser = XhsParser()
         note = {"noteId": "abc", "imageList": [{"fileId": "a"}, {"fileId": "b"}]}
         content = '<script>' + json.dumps({"noteData": note}) + '</script>'
-        with patch.object(parser, "fetch_page", AsyncMock(return_value=content)), patch.object(
+        with patch.object(parser, "fetch_page", AsyncMock(return_value=(content, "https://xhslink.cn/o/test"))), patch.object(
             parser, "validate_original_images", AsyncMock(side_effect=HTTPException(502, "original unavailable"))
         ):
             with self.assertRaises(HTTPException) as error:
@@ -102,7 +102,7 @@ class ParserChecks(unittest.TestCase):
 
     def test_empty_note_has_actionable_error(self):
         parser = XhsParser()
-        with patch.object(parser, "fetch_page", AsyncMock(return_value="<html></html>")):
+        with patch.object(parser, "fetch_page", AsyncMock(return_value=("<html></html>", "https://xhslink.cn/o/test"))):
             with self.assertRaises(HTTPException) as error:
                 asyncio.run(parser.parse("https://xhslink.cn/o/test"))
         self.assertEqual(error.exception.status_code, 422)
