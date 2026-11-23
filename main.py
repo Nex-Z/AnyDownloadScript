@@ -145,6 +145,10 @@ async def download_endpoint(req: DownloadRequest):
     url = await parse_input_string(req.input_path)
     logger.info("request_id={} event=parse url={}", request_id.get(), safe_url(url))
     if not url:
+        logger.warning(
+            "request_id={} event=input_url_missing input_length={} input_truncated={} input_path_preview={!r}",
+            request_id.get(), len(req.input_path), len(req.input_path) > 240, req.input_path[:240],
+        )
         return ResponseModel.error("无法解析输入内容")
 
     parser = await ParserFactory.get_parser(url)
